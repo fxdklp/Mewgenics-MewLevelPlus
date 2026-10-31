@@ -69,10 +69,13 @@ public sealed class ModImpl : MewgenicsMod
             if (doSkill)
             {
                 int pos = _choicePos % 4;
-                if (pos % 2 == 0)
-                    p = 0xB;   // 1/3 位：新被动替换
-                else
-                    p = HasUnmaxedSpell(screen) ? 0x8u : 0x4u;   // 2/4 位：升级法术 or 新法术替换
+                switch (pos)
+                {
+                    case 0: p = 0xB; break;   // 1 号位：新被动替换
+                    case 1: p = HasUnmaxedSpell(screen) ? 0x8u : 0x4u; break;   // 2 号位：升级法术 or 新法术替换
+                    case 2: p = 0xD; break;   // 3 号位：新被动替换（第二个）
+                    default: p = 0x4; break;  // 4 号位：新法术替换
+                }
                 _choicePos++;
             }
         }

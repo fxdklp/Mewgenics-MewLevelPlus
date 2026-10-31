@@ -1,0 +1,20 @@
+# 编译产物
+bin/
+obj/
+publish/
+*.dll
+*.pdb
+
+# 第三方 SDK（从 N 网下载，不随仓库分发）
+mewgenics-mod/sdk/
+mewgenics-mod/loader_version.dll
+mewgenics-mod/mods/
+
+# IDE / 系统
+.vs/
+.idea/
+.DS_Store
+Thumbs.db
+
+# WorkBuddy 工作区数据
+.workbuddy/

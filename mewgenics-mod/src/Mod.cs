@@ -9,11 +9,15 @@ namespace MewMods;
 //
 // UI 层（hook 0x3803b0，生成选项的包装函数）：
 //   系统刷新(非 reroll)时，param 0x7(属性) 按位置改写：
-//     1/3 位 -> param 0xB（新被动替换）
-//     2/4 位 -> param 0x8（升级法术，若有未满级法术）或 0x4（新法术替换，若全满级）
-//   重掷(reroll) 保持 param 0x7（属性）。
+//     1 号位 -> param 0xB（新被动替换）
+//     2 号位 -> 优先「升级法术(param 0x8)」，若无可升级法术则「新法术替换(param 0x4)」
+//     3 号位 -> param 0xD（新被动替换）
+//     4 号位 -> param 0x4（新法术替换）
+//   重掷(reroll) 在「法术/被动」与「属性」间交替。
 //
-// 说明：「升级已有被动(1→2)」原版普通猫无此机制，被动位用「新被动替换」近似。
+// 2 号位的「优先升级、耗尽后替换」实现：先以 param 0x8 调生成函数，
+// 读回 outBuf 的 type 字段（+0x000 低32位），type==2 表示成功生成升级；
+// 游戏在「无可升级法术」时会 fallback 成属性(type==1)，此时改用 param 0x4 重新生成。
 public sealed class ModImpl : MewgenicsMod
 {
     static ModImpl _self;
@@ -52,6 +56,8 @@ public sealed class ModImpl : MewgenicsMod
     static nint OnGenChoice(nint screen, nint outBuf, nint type)
     {
         uint p = (uint)((ulong)type & 0xFFFFFFFF);
+        bool tryUpgrade = false;   // 2 号位：优先升级法术，耗尽后替换
+
         if (p == 0x7)
         {
             bool doSkill;
@@ -71,40 +77,31 @@ public sealed class ModImpl : MewgenicsMod
                 int pos = _choicePos % 4;
                 switch (pos)
                 {
-                    case 0: p = 0xB; break;   // 1 号位：新被动替换
-                    case 1: p = HasUnmaxedSpell(screen) ? 0x8u : 0x4u; break;   // 2 号位：升级法术 or 新法术替换
-                    case 2: p = 0xD; break;   // 3 号位：新被动替换（第二个）
-                    default: p = 0x4; break;  // 4 号位：新法术替换
+                    case 0: p = 0xB; break;            // 1 号位：新被动替换
+                    case 1: tryUpgrade = true; break;  // 2 号位：升级法术 or 新法术替换
+                    case 2: p = 0xD; break;            // 3 号位：新被动替换（第二个）
+                    default: p = 0x4; break;           // 4 号位：新法术替换
                 }
                 _choicePos++;
             }
         }
+
+        if (tryUpgrade)
+        {
+            // 先尝试「升级法术」；游戏在无可升级法术时会 fallback 成属性(type=1)
+            nint r = _genSlot.InvokeRet(screen, outBuf, (nint)0x8);
+            if (ReadChoiceType(outBuf) == 2) return r;   // 成功生成「升级法术」选项
+            // 没有可升级法术了 -> 改为「新法术替换」
+            _self.Log("[MewLevelPlus] 2号位无可升级法术，改为新法术替换");
+            return _genSlot.InvokeRet(screen, outBuf, (nint)0x4);
+        }
+
         return _genSlot.InvokeRet(screen, outBuf, (nint)(ulong)p);
     }
 
-    // 判断当前升级屏的猫是否有未满级法术（法术名不以 "2" 结尾）
-    static unsafe bool HasUnmaxedSpell(nint screen)
+    // 读选项缓冲区的类型字段（+0x000 低32位）：2=升级法术，1=属性，4=新法术，5=新被动
+    static unsafe uint ReadChoiceType(nint outBuf)
     {
-        ulong catData = 0;
-        if (!HeapScan.TryRead<ulong>(screen + 0xa0, out catData) || catData == 0) return true;
-        for (int i = 0; i < 4; i++)
-        {
-            string s = ReadSSO((nint)(catData + 0x810UL + (ulong)(i * 0x20)));
-            if (!string.IsNullOrEmpty(s) && s != "None" && !s.EndsWith("2")) return true;
-        }
-        return false;
-    }
-
-    static unsafe string ReadSSO(nint ptr)
-    {
-        byte* p = (byte*)ptr;
-        ulong size = *(ulong*)(p + 16);
-        if (size > 15)
-        {
-            ulong heap = *(ulong*)p;
-            if (heap == 0) return "";
-            return new string((sbyte*)heap, 0, (int)Math.Min(size, 63), System.Text.Encoding.UTF8);
-        }
-        return new string((sbyte*)p, 0, (int)size, System.Text.Encoding.UTF8);
+        return *(uint*)outBuf;
     }
 }

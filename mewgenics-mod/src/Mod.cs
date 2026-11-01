@@ -7,17 +7,17 @@ namespace MewMods;
 
 // MewLevelPlus — 10级后继续升级法术/被动（可实现的完整版）。
 //
-// UI 层（hook 0x3803b0，生成选项的包装函数）：
+// UI 层（hook 0x3803b0，即「奖励生成函数」的包装，第三参数 = rewardKind）：
 //   系统刷新(非 reroll)时，param 0x7(属性) 按位置改写：
-//     1 号位 -> param 0xB（新被动替换）
-//     2 号位 -> 优先「升级法术(param 0x8)」，若无可升级法术则「新法术替换(param 0x4)」
-//     3 号位 -> param 0xD（新被动替换）
-//     4 号位 -> param 0x4（新法术替换）
+//     1 号位 -> 优先「升级已有被动(kind 9)」，耗尽后「新被动替换(kind 13=0xD)」
+//     2 号位 -> 优先「升级法术(kind 8)」，耗尽后「新法术替换(kind 0x4)」
+//     3 号位 -> 新被动替换(kind 13=0xD)
+//     4 号位 -> 新法术替换(kind 0x4)
 //   重掷(reroll) 在「法术/被动」与「属性」间交替。
 //
-// 2 号位的「优先升级、耗尽后替换」实现：先以 param 0x8 调生成函数，
-// 读回 outBuf 的 type 字段（+0x000 低32位），type==2 表示成功生成升级；
-// 游戏在「无可升级法术」时会 fallback 成属性(type==1)，此时改用 param 0x4 重新生成。
+// rewardKind 枚举（十进制，参考开源 mod "Skills & Passives First" 及实测）：
+//   1 = 新主动技能、7 = 属性、8 = 升级法术、9 = 被动升级、10 = 混合升级、13 = 新被动。
+// 关键：kind 9 = 升级已有被动（1→2级），此前一直误以为原版普通猫无此机制。
 public sealed class ModImpl : MewgenicsMod
 {
     static ModImpl _self;
@@ -56,7 +56,8 @@ public sealed class ModImpl : MewgenicsMod
     static nint OnGenChoice(nint screen, nint outBuf, nint type)
     {
         uint p = (uint)((ulong)type & 0xFFFFFFFF);
-        bool tryUpgrade = false;   // 2 号位：优先升级法术，耗尽后替换
+        bool tryUpgradeSpell = false;    // 2 号位
+        bool tryUpgradePassive = false;  // 1 号位
 
         if (p == 0x7)
         {
@@ -77,21 +78,30 @@ public sealed class ModImpl : MewgenicsMod
                 int pos = _choicePos % 4;
                 switch (pos)
                 {
-                    case 0: p = 0xB; break;            // 1 号位：新被动替换
-                    case 1: tryUpgrade = true; break;  // 2 号位：升级法术 or 新法术替换
-                    case 2: p = 0xD; break;            // 3 号位：新被动替换（第二个）
-                    default: p = 0x4; break;           // 4 号位：新法术替换
+                    case 0: tryUpgradePassive = true; break;  // 1 号位：被动升级 or 新被动替换
+                    case 1: tryUpgradeSpell = true; break;    // 2 号位：法术升级 or 新法术替换
+                    case 2: p = 0xD; break;                   // 3 号位：新被动替换
+                    default: p = 0x4; break;                  // 4 号位：新法术替换
                 }
                 _choicePos++;
             }
         }
 
-        if (tryUpgrade)
+        if (tryUpgradePassive)
         {
-            // 先尝试「升级法术」；游戏在无可升级法术时会 fallback 成属性(type=1)
+            // 优先「升级已有被动」(kind 9)；耗尽后游戏 fallback 成属性(type=1)，改用「新被动替换」(kind 13=0xD)
+            nint r = _genSlot.InvokeRet(screen, outBuf, (nint)0x9);
+            uint t = ReadChoiceType(outBuf);
+            if (t != 1) return r;   // 非属性(type!=1)，视为成功生成「升级被动」选项
+            _self.Log($"[MewLevelPlus] 1号位无可升级被动(kind9->type={t})，改为新被动替换");
+            return _genSlot.InvokeRet(screen, outBuf, (nint)0xD);
+        }
+
+        if (tryUpgradeSpell)
+        {
+            // 优先「升级法术」(kind 8)；耗尽后 fallback 成属性(type=1)，改用「新法术替换」
             nint r = _genSlot.InvokeRet(screen, outBuf, (nint)0x8);
             if (ReadChoiceType(outBuf) == 2) return r;   // 成功生成「升级法术」选项
-            // 没有可升级法术了 -> 改为「新法术替换」
             _self.Log("[MewLevelPlus] 2号位无可升级法术，改为新法术替换");
             return _genSlot.InvokeRet(screen, outBuf, (nint)0x4);
         }
@@ -99,7 +109,7 @@ public sealed class ModImpl : MewgenicsMod
         return _genSlot.InvokeRet(screen, outBuf, (nint)(ulong)p);
     }
 
-    // 读选项缓冲区的类型字段（+0x000 低32位）：2=升级法术，1=属性，4=新法术，5=新被动
+    // 读选项缓冲区的类型字段（+0x000 低32位）：1=属性，2=升级法术，3=升级被动，4=新法术，5=新被动
     static unsafe uint ReadChoiceType(nint outBuf)
     {
         return *(uint*)outBuf;
